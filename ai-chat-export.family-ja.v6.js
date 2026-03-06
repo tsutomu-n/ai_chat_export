@@ -851,12 +851,68 @@ class App{
     let meta={};
     try{ meta = JSON.parse(localStorage.getItem(storageKey)||'{}'); }catch{ meta={}; }
     const key = this.adapter.getConversationKey();
-    return {storageKey, key, previous: meta[key] || null, meta};
+    const raw = meta[key] || null;
+    const entry = this.normalizeRunMeta(raw);
+    return {storageKey, key, previous: entry.latest_success || null, lastAttempt: entry.last_attempt || null, row: entry, meta};
+  }
+
+  normalizeRunMeta(raw){
+    if (!raw || typeof raw !== 'object') return {latest_success:null, last_attempt:null};
+    if (raw.latest_success || raw.last_attempt) return raw;
+    if (Number.isFinite(raw.count) || Number.isFinite(raw.message_count) || raw.count === 0){
+      return {
+        latest_success:{
+          count: raw.count ?? raw.message_count ?? 0,
+          digest: raw.digest || null,
+          at: raw.at || null,
+          run_mode: raw.run_mode || null,
+          saveState: raw.saveState || null,
+          quality_status: raw.quality_status || 'WARN',
+          quality_score: raw.quality_score ?? 0,
+          message_count: raw.message_count ?? raw.count ?? 0
+        },
+        last_attempt: null
+      };
+    }
+    return {latest_success:null, last_attempt:null};
+  }
+
+  setRunAttemptStatus(status, extra={}){
+    const {storageKey, key, meta, row} = this.loadRunMeta();
+    const next = row || {latest_success:null,last_attempt:null};
+    next.last_attempt = Object.assign({}, next.last_attempt||{}, {
+      status,
+      ...extra,
+      updated_at: Utils.nowIso()
+    });
+    meta[key] = next;
+    try{ localStorage.setItem(storageKey, JSON.stringify(meta)); }catch{}
+  }
+
+  markRunAttemptStart(mode){
+    const runId = `${Date.now()}_${Math.random().toString(36).slice(2,10)}`;
+    this.setRunAttemptStatus('running', {
+      run_id: runId,
+      mode,
+      started_at: Utils.nowIso()
+    });
+    return runId;
   }
 
   saveRunMeta(next){
-    const {storageKey, key, meta} = this.loadRunMeta();
-    meta[key] = next;
+    const {storageKey, key, meta, row} = this.loadRunMeta();
+    const base = row || {latest_success:null,last_attempt:null};
+    const saved = {
+      ...next,
+      run_status:'success',
+      run_saved_at: Utils.nowIso()
+    };
+    base.latest_success = saved;
+    base.last_attempt = Object.assign({}, base.last_attempt || {}, {
+      status:'success',
+      finished_at: Utils.nowIso()
+    });
+    meta[key] = base;
     try{ localStorage.setItem(storageKey, JSON.stringify(meta)); }catch{}
   }
 
@@ -867,16 +923,16 @@ class App{
   }
 
   diffInfo(messages){
-    const {previous} = this.loadRunMeta();
+    const {previous, lastAttempt} = this.loadRunMeta();
     const nowCount = messages.length;
     const nowDigest = this.computeRunDigest(messages);
-    if (!previous || !Number.isFinite(previous.count)) return {previous:null, now:{count:nowCount,digest:nowDigest}};
+    if (!previous || !Number.isFinite(previous.count)) return {previous:null, now:{count:nowCount,digest:nowDigest}, lastAttempt};
     const diff = nowCount - previous.count;
     const diffAbs = Math.abs(diff);
     const rate = previous.count>0 ? diffAbs/previous.count : 0;
     const stable = diffAbs<=1 || rate<=0.01;
     const digestSame = previous.digest && previous.digest===nowDigest;
-    return {previous, now:{count:nowCount,digest:nowDigest}, diff, diffAbs, rate, stable, digestSame};
+    return {previous, now:{count:nowCount,digest:nowDigest}, lastAttempt, diff, diffAbs, rate, stable, digestSame};
   }
 
   // ---- UI primitives ----
@@ -1100,6 +1156,7 @@ class App{
 
     // diffによる追加ヒント
     let diffLine = '';
+    const abortedLast = diff?.lastAttempt?.status==='aborted' || diff?.lastAttempt?.status==='cancel';
     if (diff?.previous){
       const sign = diff.diff>0?'+':'';
       diffLine = `前回: ${diff.previous.count}件 / 今回: ${diff.now.count}件（差分 ${sign}${diff.diff}件）`;
@@ -1110,6 +1167,10 @@ class App{
       }
     }
 
+    if (!diff?.previous && abortedLast){
+      diffLine = '前回: 保存なし（中断）。今回は新規再取得で比較基準はリセットされます。';
+      hint = '前回は保存されていないため、今回は保存結果を基準に比較します。';
+    }
     return {label, color, hint, diffLine, score:q.score, raw:q};
   }
 
@@ -1164,7 +1225,9 @@ class App{
     const diffWarn = !!(diff?.previous && (!diff.stable && (diff.rate||0) >= 0.12));
     const hasWarning = qWarn || diffWarn;
     const text = !diff?.previous
-      ? (qWarn ? (q.status==='WARN' ? 'やや不安' : '要再実行') : '前回データなし')
+      ? (diff?.lastAttempt?.status==='aborted' || diff?.lastAttempt?.status==='cancel'
+        ? '前回は保存されず中断'
+        : (qWarn ? (q.status==='WARN' ? 'やや不安' : '要再実行') : '前回データなし'))
       : (qWarn ? (q.status==='WARN' ? 'やや不安' : '要再実行') : 'なし');
     return {hasWarning, text};
   }
@@ -1176,6 +1239,28 @@ class App{
       `保存状態: ${savedState}`,
       `警告有無: ${qWarn.hasWarning?'あり':'なし'}${qWarn.text ? `（${qWarn.text}）` : ''}`
     ];
+  }
+
+  lastAttemptStatusLabel(){
+    const {previous, lastAttempt} = this.loadRunMeta();
+    const status = lastAttempt?.status;
+    const map = {
+      success: '保存済み（成功）',
+      failed: '保存せず失敗',
+      aborted: '未保存で中断',
+      cancel: '未保存で中止',
+      rerun_requested: '再実行要求があった状態',
+      running: '実行中（前回保存を参照）'
+    };
+    if (!status) return `最終保存: ${Number.isFinite(previous?.count) ? `${previous.count}件` : 'なし'}`;
+    if (status === 'running') return `最終保存: ${Number.isFinite(previous?.count) ? `${previous.count}件` : 'なし'}`;
+    const suffix = map[status] || `状態:${status}`;
+    const c = Number.isFinite(lastAttempt.count) ? `（${lastAttempt.count}件）` : '';
+    return `直近試行: ${suffix}${c}`;
+  }
+
+  comparisonBaseLabel(previous){
+    return Number.isFinite(previous?.count) ? `比較ベース: ${previous.count}件` : '比較ベース: なし（保存済みなし）';
   }
 
   async confirmRerunDialog(mode='normal'){
@@ -1192,28 +1277,45 @@ class App{
       ]);
 
       const body = Utils.el('div',{style:'padding:18px 22px;display:grid;gap:10px;font-size:14px;line-height:1.6;color:'+THEME.fg+';'});
+      const attemptLine = this.lastAttemptStatusLabel();
       const lines = [
+        attemptLine,
         `再実行モード: ${modeLabel}`,
         '件数・進捗は0件から再計測',
-        '中間保存状態は上書きされる'
+        '保存ファイルは残り、中間保存状態は上書きされます'
       ];
       for (const line of lines){
-        body.appendChild(Utils.el('div',{text:`・${line}`,style:'color:'+THEME.fg+';'}));
+        body.appendChild(Utils.el('div',{text:line,style:'color:'+THEME.fg+';'}));
       }
 
       const footer = Utils.el('div',{style:`padding:14px 22px;background:${THEME.bg};border-top:1px solid ${THEME.border};display:flex;gap:10px;justify-content:flex-end;`});
       const done=(ok)=>{
         try{ ov.remove(); }catch{}
+        document.removeEventListener('keydown', onKeydown);
         resolve(!!ok);
       };
+      const confirmBtn = this.btn(actionLabel,'primary', ()=>done(true));
+      const cancelBtn = this.btn('やめる','subtle', ()=>done(false));
+      const onKeydown=(e)=>{
+        if (e.key==='Escape'){
+          e.preventDefault();
+          done(false);
+        }else if (e.key==='Enter'){
+          e.preventDefault();
+          done(true);
+        }
+      };
+      document.addEventListener('keydown', onKeydown);
       footer.append(
-        this.btn('やめる','subtle', ()=>done(false)),
-        this.btn(actionLabel,'primary', ()=>done(true))
+        cancelBtn,
+        confirmBtn
       );
 
       modal.append(header, body, footer);
       ov.appendChild(modal);
       document.body.appendChild(ov);
+      confirmBtn.focus();
+      confirmBtn.style.outline = '2px solid '+THEME.accent;
     });
   }
 
@@ -1325,7 +1427,8 @@ class App{
       renderCompact();
       body.appendChild(compact);
 
-      const grid = Utils.el('div',{style:'display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;'});
+      const grid = Utils.el('div',{style:'display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;'});
+      const baseLabel = this.comparisonBaseLabel(diff.previous);
       const diffChip = (()=>{
         if (!diff.previous) return this.chip('前回', 'なし', THEME.muted);
         const sign = diff.diff>0?'+':'';
@@ -1337,6 +1440,7 @@ class App{
 
       grid.append(
         this.chip('会話数', `${messages.length}件`),
+        this.chip('比較', baseLabel),
         this.chip('速度', this.getPresetLabel()),
         this.chip('形式', this.getFormatLabel()),
         diffChip
@@ -1465,6 +1569,7 @@ class App{
     if (!proceed) return {action:'cancel'};
 
     this.abortState = {aborted:false};
+    const attemptId = this.markRunAttemptStart(this.config.preset);
     this.showBusyDialog();
     let res=null;
     try{
@@ -1477,6 +1582,11 @@ class App{
     const quality = res?.quality || null;
 
     if (!messages.length){
+      this.setRunAttemptStatus('failed', {
+        attempt_id: attemptId,
+        mode: this.config.preset,
+        reason: 'no_messages'
+      });
       Utils.toast('会話を見つけられませんでした。ページ表示が変わったか、未対応の可能性があります。', 'error', 4200);
       return {action:'cancel'};
     }
@@ -1491,9 +1601,32 @@ class App{
         digest:diff.now.digest,
         at:Utils.nowIso(),
         saveState: result.saveState || result.action,
+        run_mode: this.config.preset,
+        run_id: attemptId,
         quality_status: quality?.status || 'WARN',
         quality_score: quality?.score ?? 0,
         message_count: messages.length
+      });
+      this.setRunAttemptStatus('success', {attempt_id: attemptId, count: messages.length, mode: this.config.preset});
+    }else if (result?.action==='rerun' || result?.action==='rerun_careful'){
+      this.setRunAttemptStatus('rerun_requested', {
+        attempt_id: attemptId,
+        count: messages.length,
+        mode: this.config.preset,
+        next_action: result.action
+      });
+    }else if (result?.action==='cancel'){
+      this.setRunAttemptStatus('cancel', {
+        attempt_id: attemptId,
+        count: messages.length,
+        mode: this.config.preset
+      });
+    }else{
+      this.setRunAttemptStatus('aborted', {
+        attempt_id: attemptId,
+        count: messages.length,
+        mode: this.config.preset,
+        next_action: result?.action || 'unknown'
       });
     }
     return result;
