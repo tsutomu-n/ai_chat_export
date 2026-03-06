@@ -20,6 +20,9 @@ const fs = require('fs');
 
 const [, , minPath, outPath] = process.argv;
 let body = fs.readFileSync(minPath, 'utf8').trim();
+body = encodeURI(body)
+  .replace(/\?/g, '%3F')
+  .replace(/#/g, '%23');
 if (!body.startsWith('javascript:')) body = `javascript:${body}`;
 fs.writeFileSync(outPath, `${body}\n`);
 console.log(`Generated ${outPath} (${body.length} chars)`);
