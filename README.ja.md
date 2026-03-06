@@ -50,3 +50,4 @@ bash /home/tn/projects/tools/ai_logger/generate_oneline_bookmarklet.sh
 ## 補足
 - `ai-chat-export.oneliner.js` は `javascript:` URL 文字列です。通常の JS lint 対象には向きません。
 - lint / 構文確認は `ai-chat-export.js` または `ai-chat-export.min.js` に対して行ってください。
+- `.eslintignore` と `.vscode/settings.json` で、生成物と履歴ディレクトリは lint / 検索 / watcher の対象外にしています。

@@ -1,0 +1,10 @@
+ai-chat-export.min.js
+ai-chat-export.oneliner.js
+**/*.min.js
+**/*.oneliner.js
+0305_logger/**
+new-logger/**
+.old/**
+.ai_memory/**
+.memo/**
+.serena/**

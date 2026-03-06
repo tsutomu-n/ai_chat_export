@@ -1,0 +1,28 @@
+{
+  "files.associations": {
+    "ai-chat-export.oneliner.js": "plaintext"
+  },
+  "eslint.workingDirectories": [
+    "."
+  ],
+  "search.exclude": {
+    "**/*.min.js": true,
+    "**/*.oneliner.js": true,
+    "0305_logger/**": true,
+    "new-logger/**": true,
+    ".old/**": true,
+    ".ai_memory/**": true,
+    ".memo/**": true,
+    ".serena/**": true
+  },
+  "files.watcherExclude": {
+    "**/*.min.js": true,
+    "**/*.oneliner.js": true,
+    "0305_logger/**": true,
+    "new-logger/**": true,
+    ".old/**": true,
+    ".ai_memory/**": true,
+    ".memo/**": true,
+    ".serena/**": true
+  }
+}
