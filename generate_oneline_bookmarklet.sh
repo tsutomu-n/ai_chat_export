@@ -21,11 +21,10 @@ node - "${TMP_MIN}" "${OUT}" <<'NODE'
 const fs = require('fs');
 
 const [, , minPath, outPath] = process.argv;
-const minified = fs.readFileSync(minPath, 'utf8').trim();
-const payload = Buffer.from(minified, 'utf8').toString('base64');
-const bookmarklet = `javascript:(()=>{eval(atob("${payload}"))})()`;
-fs.writeFileSync(outPath, `${bookmarklet}\n`);
-console.log(`Generated ${outPath} (${bookmarklet.length} chars)`);
+let body = fs.readFileSync(minPath, 'utf8').trim();
+if (!body.startsWith('javascript:')) body = `javascript:${body}`;
+fs.writeFileSync(outPath, `${body}\n`);
+console.log(`Generated ${outPath} (${body.length} chars)`);
 NODE
 
 echo "Generated ${MIN_OUT}"

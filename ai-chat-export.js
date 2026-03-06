@@ -176,13 +176,7 @@ class Utils{
   static escapeMarkdownLinkDestination(raw){
     const url = this.normalizeExportUrl(raw);
     if (!url) return '';
-    return url
-      .replace(/\\/g,'%5C')
-      .replace(/ /g,'%20')
-      .replace(/\(/g,'%28')
-      .replace(/\)/g,'%29')
-      .replace(/\[/g,'%5B')
-      .replace(/\]/g,'%5D');
+    return url.replace(/[\\ ()[\]]/g, ch => encodeURIComponent(ch));
   }
 }
 
@@ -663,8 +657,8 @@ class ScrollEngine{
   }
 
   static buildQuality(stats){
-    const topConverged = stats.topReached && stats.topStableHits>=stats.stableTarget;
-    const bottomConverged = stats.bottomReached && stats.bottomStableHits>=stats.stableTarget;
+    const topConverged = (stats.topReached && stats.topStableHits>=stats.stableTarget) || stats.topEarlyExit;
+    const bottomConverged = (stats.bottomReached && stats.bottomStableHits>=stats.stableTarget) || stats.bottomEarlyExit;
     const finalStable = stats.finalStableHits>=2 && stats.finalNewMessages===0;
     const identityStable = stats.weakIdentityMessages===0;
     const checks=[topConverged, bottomConverged, finalStable, identityStable];
@@ -707,18 +701,24 @@ class ScrollEngine{
       topIterations:0,
       topReached:false,
       topStableHits:0,
+      topNoChangeHits:0,
+      topEarlyExit:false,
       downIterations:0,
       bottomReached:false,
       bottomStableHits:0,
+      bottomNoChangeHits:0,
+      bottomEarlyExit:false,
       finalStableHits:0,
       finalNewMessages:0,
       expandClicks:0,
       stableTarget:3,
+      earlyExitStableTarget: Math.max(4, Math.min(8, Math.ceil((Number(cfg.scrollMax)||0) / 10))),
       mergedUpdates:0,
       unknownMessages:0,
       weakIdentityMessages:0,
       orderGraphCycles:0
     };
+    const minIterationsBeforeEarlyExit = Math.min(Number(cfg.scrollMax)||0, Math.max(6, stats.earlyExitStableTarget + 2));
     let expandBudgetLeft = Math.max(0, Number(cfg.expandMaxClicks)||0);
 
     const classifySig = (sig)=>{
@@ -902,6 +902,7 @@ class ScrollEngine{
 
     // stage: top
     let lastCount=-1;
+    let lastHeight=-1;
     for (let i=0;i<cfg.scrollMax;i++){
       ensure();
       stats.topIterations++;
@@ -914,20 +915,29 @@ class ScrollEngine{
 
       await maybeExpand('top');
       const c = capture();
+      const h = getH();
 
       const atTop = getY()<=1;
       if (atTop) stats.topReached=true;
 
       if (c===lastCount && atTop) stats.topStableHits++;
       else if (atTop) stats.topStableHits = Math.max(0, stats.topStableHits-1);
+      if (c===lastCount && Math.abs(h-lastHeight)<=2) stats.topNoChangeHits++;
+      else stats.topNoChangeHits = 0;
 
       lastCount = c;
+      lastHeight = h;
 
       if (stats.topReached && stats.topStableHits>=stats.stableTarget) break;
+      if (stats.topIterations>=minIterationsBeforeEarlyExit && stats.topNoChangeHits>=stats.earlyExitStableTarget){
+        stats.topEarlyExit = true;
+        break;
+      }
     }
 
     // stage: down
     lastCount=-1;
+    lastHeight=-1;
     for (let i=0;i<cfg.scrollMax;i++){
       ensure();
       stats.downIterations++;
@@ -940,16 +950,24 @@ class ScrollEngine{
 
       await maybeExpand('down');
       const c = capture();
+      const h = getH();
 
       const atBottom = Math.abs(getH() - getViewportH() - getY()) <= 1;
       if (atBottom) stats.bottomReached=true;
 
       if (c===lastCount && atBottom) stats.bottomStableHits++;
       else if (atBottom) stats.bottomStableHits = Math.max(0, stats.bottomStableHits-1);
+      if (c===lastCount && Math.abs(h-lastHeight)<=2) stats.bottomNoChangeHits++;
+      else stats.bottomNoChangeHits = 0;
 
       lastCount = c;
+      lastHeight = h;
 
       if (stats.bottomReached && stats.bottomStableHits>=stats.stableTarget) break;
+      if (stats.downIterations>=minIterationsBeforeEarlyExit && stats.bottomNoChangeHits>=stats.earlyExitStableTarget){
+        stats.bottomEarlyExit = true;
+        break;
+      }
     }
 
     // stage: final settle
@@ -1018,23 +1036,58 @@ class App{
     }
   }
 
+  normalizeStoredConfig(raw, def){
+    const presets = def.presets;
+    const preset = (raw && typeof raw.preset === 'string' && presets[raw.preset]) ? raw.preset : def.preset;
+    const merged = {
+      ...def,
+      preset,
+      fmt: (raw && typeof raw.fmt === 'string') ? raw.fmt : def.fmt,
+      scrollMax: Number.isFinite(raw?.scrollMax) ? raw.scrollMax : undefined,
+      scrollDelay: Number.isFinite(raw?.scrollDelay) ? raw.scrollDelay : undefined,
+      autoExpand: typeof raw?.autoExpand === 'boolean' ? raw.autoExpand : undefined,
+      expandMaxClicks: Number.isFinite(raw?.expandMaxClicks) ? raw.expandMaxClicks : undefined,
+      expandClickDelay: Number.isFinite(raw?.expandClickDelay) ? raw.expandClickDelay : undefined
+    };
+    const presetDefaults = presets[preset] || presets.normal;
+    if (!Number.isFinite(merged.scrollMax)) merged.scrollMax = presetDefaults.scrollMax;
+    if (!Number.isFinite(merged.scrollDelay)) merged.scrollDelay = presetDefaults.scrollDelay;
+    if (typeof merged.autoExpand !== 'boolean') merged.autoExpand = presetDefaults.autoExpand;
+    if (!Number.isFinite(merged.expandMaxClicks)) merged.expandMaxClicks = presetDefaults.expandMaxClicks;
+    if (!Number.isFinite(merged.expandClickDelay)) merged.expandClickDelay = presetDefaults.expandClickDelay;
+    merged.presets = presets;
+    return merged;
+  }
+
+  getPersistedConfig(){
+    return {
+      fmt: this.config.fmt,
+      preset: this.config.preset,
+      scrollMax: this.config.scrollMax,
+      scrollDelay: this.config.scrollDelay,
+      autoExpand: this.config.autoExpand,
+      expandMaxClicks: this.config.expandMaxClicks,
+      expandClickDelay: this.config.expandClickDelay
+    };
+  }
+
   // ---- config ----
   getDefaultConfig(){
     const presets = {
-      fast:    { scrollMax: 70,  scrollDelay: 260, autoExpand:false },
-      normal:  { scrollMax: 105, scrollDelay: 380, autoExpand:true  },
-      careful: { scrollMax: 170, scrollDelay: 650, autoExpand:true }
+      fast:    { scrollMax: 18, scrollDelay: 140, autoExpand:false, expandMaxClicks: 0,  expandClickDelay: 120 },
+      normal:  { scrollMax: 32, scrollDelay: 220, autoExpand:true,  expandMaxClicks: 24, expandClickDelay: 130 },
+      careful: { scrollMax: 72, scrollDelay: 360, autoExpand:true,  expandMaxClicks: 80, expandClickDelay: 150 }
     };
     return {
       fmt:'std', // std|obs|json
-      preset:'careful',
+      preset:'normal',
       presets,
       // 手動調整（詳細設定）
-      scrollMax: presets.careful.scrollMax,
-      scrollDelay: presets.careful.scrollDelay,
-      autoExpand: presets.careful.autoExpand,
-      expandMaxClicks: 200,
-      expandClickDelay: 170
+      scrollMax: presets.normal.scrollMax,
+      scrollDelay: presets.normal.scrollDelay,
+      autoExpand: presets.normal.autoExpand,
+      expandMaxClicks: presets.normal.expandMaxClicks,
+      expandClickDelay: presets.normal.expandClickDelay
     };
   }
 
@@ -1048,19 +1101,20 @@ class App{
       if (!cfg || typeof cfg !== 'object'){
         return def;
       }
+      const normalized = this.normalizeStoredConfig(cfg, def);
       if (!cfgFromNew && legacyCfg){
-        this.safeSet(cfgKey, cfg);
+        this.safeSet(cfgKey, {
+          fmt: normalized.fmt,
+          preset: normalized.preset,
+          scrollMax: normalized.scrollMax,
+          scrollDelay: normalized.scrollDelay,
+          autoExpand: normalized.autoExpand,
+          expandMaxClicks: normalized.expandMaxClicks,
+          expandClickDelay: normalized.expandClickDelay
+        });
         this.safeDelete(legacyCfgKey);
       }
-      const merged = {...def, ...cfg};
-      // presetの値を反映（ユーザーが変えた場合は保持）
-      if (!merged.scrollMax || !merged.scrollDelay){
-        const p = merged.presets?.[merged.preset] || def.presets.normal;
-        merged.scrollMax = p.scrollMax;
-        merged.scrollDelay = p.scrollDelay;
-        merged.autoExpand = p.autoExpand;
-      }
-      return merged;
+      return normalized;
     }catch{
       return def;
     }
@@ -1068,7 +1122,7 @@ class App{
 
   saveConfig(){
     const {cfgKey} = this.storageKeys();
-    this.safeSet(cfgKey, this.config);
+    this.safeSet(cfgKey, this.getPersistedConfig());
   }
 
   safeSet(key, value){
@@ -1086,6 +1140,8 @@ class App{
     this.config.scrollMax = p.scrollMax;
     this.config.scrollDelay = p.scrollDelay;
     this.config.autoExpand = p.autoExpand;
+    this.config.expandMaxClicks = p.expandMaxClicks;
+    this.config.expandClickDelay = p.expandClickDelay;
   }
 
   // ---- run meta (diff) ----
@@ -1257,9 +1313,9 @@ class App{
         return card;
       };
       presetWrap.append(
-        presetCard('fast','はやい','軽め。短い会話向き'),
-        presetCard('normal','ふつう','普段使い（速度と精度の中間）'),
-        presetCard('careful','ていねい','既定。長い会話・漏れ対策')
+        presetCard('fast','はやい','短い会話向き。最速・展開なし'),
+        presetCard('normal','ふつう','既定。普段使い向け'),
+        presetCard('careful','ていねい','長い会話向き。時間はかかるが丁寧')
       );
       body.appendChild(presetWrap);
 
@@ -1315,7 +1371,7 @@ class App{
         return row;
       };
       inner.append(
-        slider('スクロール回数（上+下）','scrollMax', 30, 220, 5, '回'),
+        slider('各方向の最大スクロール回数','scrollMax', 10, 220, 2, '回'),
         slider('待ち時間','scrollDelay', 120, 1200, 20, 'ms'),
         slider('展開クリック上限','expandMaxClicks', 0, 600, 10, '回'),
         slider('展開クリック間隔','expandClickDelay', 80, 600, 10, 'ms'),
@@ -1739,8 +1795,8 @@ class App{
         detail.appendChild(Utils.el('summary',{text:'くわしい判定を見る',style:`cursor:pointer;list-style:none;padding:12px 14px;font-weight:700;font-size:14px;line-height:1.5;`}));
         const txt = [
           `status: ${quality.status} / score: ${quality.score}`,
-          `topReached: ${quality.topReached} / topStableHits: ${quality.topStableHits}`,
-          `bottomReached: ${quality.bottomReached} / bottomStableHits: ${quality.bottomStableHits}`,
+          `topReached: ${quality.topReached} / topStableHits: ${quality.topStableHits} / topNoChangeHits: ${quality.topNoChangeHits || 0} / topEarlyExit: ${!!quality.topEarlyExit}`,
+          `bottomReached: ${quality.bottomReached} / bottomStableHits: ${quality.bottomStableHits} / bottomNoChangeHits: ${quality.bottomNoChangeHits || 0} / bottomEarlyExit: ${!!quality.bottomEarlyExit}`,
           `finalNewMessages: ${quality.finalNewMessages}`,
           `expandClicks: ${quality.expandClicks}`,
           `mergedUpdates: ${quality.mergedUpdates || 0}`,
