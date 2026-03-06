@@ -1,4 +1,4 @@
-# 家族向け AIチャット書き出し（ブックマークレット / 日本語UI）
+# Vanilla AIチャット書き出し（ブックマークレット / 日本語UI）
 
 対象: ChatGPT（chatgpt.com / chat.openai.com） / Google AI Studio（aistudio.google.com, Chat画面） / Grok（grok系、x.com/i/grok）  
 形式: 標準Markdown（デフォルト） / Obsidian向け / JSON（任意）
@@ -27,5 +27,5 @@
 - サイト側UI変更で壊れた場合は、Adapter（ChatGPT/Grok）側のselector修正が必要です
 
 ## ファイル
-- 可読版: ai-chat-export.family-ja.v6.js
-- ブックマーク登録用（1行）: ai-chat-export.family-ja.v6.oneliner.js
+- 可読版: ai-chat-export.js
+- ブックマーク登録用（1行）: ai-chat-export.oneliner.js
