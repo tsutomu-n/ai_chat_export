@@ -1164,9 +1164,7 @@ class App{
     const diffWarn = !!(diff?.previous && (!diff.stable && (diff.rate||0) >= 0.12));
     const hasWarning = qWarn || diffWarn;
     const text = !diff?.previous
-      ? (diff?.lastAttempt?.status==='aborted' || diff?.lastAttempt?.status==='cancel'
-        ? '前回は保存されず中断'
-        : (qWarn ? (q.status==='WARN' ? 'やや不安' : '要再実行') : '前回データなし'))
+      ? (qWarn ? (q.status==='WARN' ? 'やや不安' : '要再実行') : '前回データなし')
       : (qWarn ? (q.status==='WARN' ? 'やや不安' : '要再実行') : 'なし');
     return {hasWarning, text};
   }
