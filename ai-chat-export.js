@@ -31,7 +31,6 @@ class Utils{
     for(const [k,v] of Object.entries(props||{})){
       if (k==='style') e.setAttribute('style', v);
       else if (k==='text') e.textContent = v;
-      else if (k==='html') e.innerHTML = v;
       else if (k.startsWith('on') && typeof v==='function') e.addEventListener(k.slice(2), v);
       else if (v!==undefined && v!==null) e.setAttribute(k, String(v));
     }
@@ -98,6 +97,93 @@ class Utils{
   static filenameSafe(s){
     return (s||'').replace(/[\\/:*?"<>|]+/g,'_').replace(/\s+/g,' ').trim().slice(0,120) || 'chat';
   }
+
+  static domPath(el){
+    try{
+      if (!el || !(el instanceof Element)) return '';
+      const parts = [];
+      let cur = el;
+      let depth = 0;
+      while (cur && cur.nodeType === Node.ELEMENT_NODE && depth < 12){
+        const tag = (cur.tagName || '').toLowerCase();
+        if (!tag) break;
+        if (cur.id){
+          parts.push(`${tag}#${cur.id}`);
+          break;
+        }
+        const parent = cur.parentElement;
+        const siblings = parent ? Array.from(parent.children).filter(x => (x.tagName || '').toLowerCase() === tag) : [];
+        const idx = parent ? Math.max(1, siblings.indexOf(cur) + 1) : 1;
+        parts.push(`${tag}:nth-of-type(${idx})`);
+        cur = parent;
+        depth++;
+      }
+      return parts.reverse().join('>');
+    }catch{
+      return '';
+    }
+  }
+
+  static maxFenceRun(text, ch){
+    let max = 0;
+    let cur = 0;
+    const s = String(text || '');
+    for (let i=0;i<s.length;i++){
+      if (s[i] === ch){
+        cur++;
+        if (cur > max) max = cur;
+      } else {
+        cur = 0;
+      }
+    }
+    return max;
+  }
+
+  static chooseCodeFence(text, lang=''){
+    const body = String(text || '');
+    const safeLang = String(lang || '').replace(/[`~\s]+/g,'').trim();
+    const backtickLen = Math.max(3, this.maxFenceRun(body, '`') + 1);
+    const tildeLen = Math.max(3, this.maxFenceRun(body, '~') + 1);
+    const useTilde = safeLang.includes('`') || backtickLen > tildeLen;
+    return {
+      fence: (useTilde ? '~' : '`').repeat(useTilde ? tildeLen : backtickLen),
+      lang: safeLang
+    };
+  }
+
+  static escapeMarkdownLinkLabel(s){
+    return String(s || '')
+      .replace(/\\/g,'\\\\')
+      .replace(/\[/g,'\\[')
+      .replace(/\]/g,'\\]')
+      .replace(/\r?\n/g,' ');
+  }
+
+  static normalizeExportUrl(raw){
+    const s = String(raw || '').trim();
+    if (!s) return '';
+    if (s.startsWith('#')) return s;
+    const low = s.toLowerCase();
+    if (low.startsWith('javascript:')) return '';
+    if (low.startsWith('data:') || low.startsWith('blob:') || low.startsWith('mailto:') || low.startsWith('tel:')) return s;
+    try{
+      return new URL(s, location.href).href;
+    }catch{
+      return s;
+    }
+  }
+
+  static escapeMarkdownLinkDestination(raw){
+    const url = this.normalizeExportUrl(raw);
+    if (!url) return '';
+    return url
+      .replace(/\\/g,'%5C')
+      .replace(/ /g,'%20')
+      .replace(/\(/g,'%28')
+      .replace(/\)/g,'%29')
+      .replace(/\[/g,'%5B')
+      .replace(/\]/g,'%5D');
+  }
 }
 
 class MarkdownParser{
@@ -131,13 +217,14 @@ class MarkdownParser{
       const lang = code ? ((code.className.match(/language-([\w-]+)/)||[])[1]||'') : '';
       const body = Utils.safeText(raw).replace(/\n{3,}/g,'\n\n').trim();
       if (!body) return '';
-      return `\n\`\`\`${lang}\n${body}\n\`\`\`\n\n`;
+      const {fence, lang: safeLang} = Utils.chooseCodeFence(body, lang);
+      return `\n${fence}${safeLang}\n${body}\n${fence}\n\n`;
     }
 
     // 画像
     if (tag === 'img'){
-      const alt = el.getAttribute('alt') || '画像';
-      const src = el.getAttribute('src') || '';
+      const alt = Utils.escapeMarkdownLinkLabel(el.getAttribute('alt') || '画像');
+      const src = Utils.escapeMarkdownLinkDestination(el.getAttribute('src') || '');
       if (src) return `![${alt}](${src})`;
       return `![${alt}](画像)`;
     }
@@ -173,8 +260,9 @@ class MarkdownParser{
         return `\`${t.replace(/`/g,'\\`')}\``;
       }
       case 'a': {
-        const href = el.getAttribute('href') || '';
-        const label = children.trim() || href || 'リンク';
+        const hrefRaw = el.getAttribute('href') || '';
+        const href = Utils.escapeMarkdownLinkDestination(hrefRaw);
+        const label = Utils.escapeMarkdownLinkLabel(children.trim() || hrefRaw || 'リンク');
         if (!href) return label;
         return `[${label}](${href})`;
       }
@@ -248,22 +336,9 @@ class BaseAdapter{
   }
   getPreferredScrollContainerSelectors(){ return []; }
   extractMessages(){
-    // フォールバック: “会話っぽい”塊を拾う（壊れやすい）
-    const candidates = Array.from(document.querySelectorAll('[data-message-author-role], article, section, main, div'))
-      .filter(el => el && el.textContent && el.textContent.trim().length>0);
-    const best = candidates
-      .map(el => ({el, score: (el.querySelectorAll('pre,code,table,blockquote').length*10) + Math.min(3000, (el.innerText||'').length)}))
-      .sort((a,b)=>b.score-a.score)[0]?.el;
-    if (!best) return [];
-    // 子要素ごとに分割は難しいので、巨大塊をひとつのメッセージにしてしまうと使いにくい。
-    // なので「段落」単位で切る（雑だが、回収不能よりマシ）
-    const text = MarkdownParser.extract(best);
-    const parts = text.split(/\n{2,}/).map(s=>s.trim()).filter(Boolean);
-    const out=[];
-    for (const p of parts){
-      out.push({role:'Unknown', content:p, sig:Utils.djb2(p.slice(0,4000))});
-    }
-    return out;
+    // 汎用フォールバックは fail-closed に寄せる。
+    // “それっぽい”会話ログを作るより、未対応として止める方が安全。
+    return [];
   }
   findExpandButtons(root){ return []; }
 }
@@ -304,10 +379,9 @@ class ChatGPTAdapter extends BaseAdapter{
     const turns = Array.from(document.querySelectorAll('article[data-testid^="conversation-turn-"], div[data-testid^="conversation-turn-"]'));
     if (!turns.length) return [];
     return turns.map((el,idx)=>{
-      let role='Model';
+      let role='Unknown';
       if (el.querySelector('[data-message-author-role="user"]')) role='User';
       else if (el.querySelector('[data-message-author-role="assistant"]')) role='Model';
-      else role = idx%2===0 ? 'User':'Model';
       const content = MarkdownParser.extract(el);
       return {role, content, sig:this.nodeSig(el)};
     }).filter(m=>m.content && m.content.length>0);
@@ -316,6 +390,8 @@ class ChatGPTAdapter extends BaseAdapter{
     // DOMの安定識別子があるなら使う
     const id = el.getAttribute('data-message-id') || el.id || '';
     if (id) return `id:${id}`;
+    const path = Utils.domPath(el);
+    if (path) return `p:${path}`;
     const txt = (el.innerText||'').replace(/\s+/g,' ').trim().slice(0,500);
     return `h:${Utils.djb2(txt)}`;
   }
@@ -383,6 +459,8 @@ class AIStudioAdapter extends BaseAdapter{
   nodeSig(el){
     const id = el.getAttribute('data-turn-id') || el.getAttribute('data-message-id') || el.id || '';
     if (id) return `id:${id}`;
+    const path = Utils.domPath(el);
+    if (path) return `p:${path}`;
     const txt = (el.innerText||'').replace(/\s+/g,' ').trim().slice(0,500);
     return `h:${Utils.djb2(txt)}`;
   }
@@ -436,36 +514,15 @@ class GrokAdapter extends BaseAdapter{
         return {role, content, sig:this.nodeSig(el)};
       }).filter(m=>m.content && m.content.length>0);
     }
-
-    // 次: “吹き出しっぽい”連続要素を拾う
-    const candidates = Array.from(document.querySelectorAll('main article, main section, main div'))
-      .filter(el=>{
-        if (!el || !el.textContent) return false;
-        const t=el.textContent.trim();
-        if (t.length<20) return false;
-        if (t.length>12000) return true;
-        // code/blockquote/tableがあるなら会話っぽさが高い
-        if (el.querySelector('pre,code,blockquote,table')) return true;
-        return false;
-      });
-
-    // 大きい順に上位を採用し、そこから“段落”で切る（フォールバック）
-    const best = candidates.sort((a,b)=>(b.innerText||'').length-(a.innerText||'').length)[0];
-    if (!best) return [];
-    const raw = MarkdownParser.extract(best);
-    const chunks = raw.split(/\n{2,}/).map(s=>s.trim()).filter(Boolean);
-
-    const out=[];
-    for (let i=0;i<chunks.length;i++){
-      const c=chunks[i];
-      const role = (i%2===0) ? 'User' : 'Model';
-      out.push({role, content:c, sig:Utils.djb2(role+':'+c.slice(0,2000))});
-    }
-    return out;
+    return [];
   }
   nodeSig(el){
-    const id = el.getAttribute('data-testid') || el.getAttribute('data-id') || el.id || '';
-    if (id) return `id:${id}`;
+    const stableId = el.getAttribute('data-id') || el.id || '';
+    if (stableId) return `id:${stableId}`;
+    const testId = el.getAttribute('data-testid') || '';
+    if (testId) return `testid:${testId}`;
+    const path = Utils.domPath(el);
+    if (path) return `p:${path}`;
     const txt = (el.innerText||'').replace(/\s+/g,' ').trim().slice(0,500);
     return `h:${Utils.djb2(txt)}`;
   }
@@ -609,11 +666,12 @@ class ScrollEngine{
     const topConverged = stats.topReached && stats.topStableHits>=stats.stableTarget;
     const bottomConverged = stats.bottomReached && stats.bottomStableHits>=stats.stableTarget;
     const finalStable = stats.finalStableHits>=2 && stats.finalNewMessages===0;
-    const checks=[topConverged, bottomConverged, finalStable];
+    const identityStable = stats.weakIdentityMessages===0;
+    const checks=[topConverged, bottomConverged, finalStable, identityStable];
     const failed=checks.filter(v=>!v).length;
     const status = failed===0?'PASS':(failed===1?'WARN':'FAIL');
     const score = Math.round(((checks.length-failed)/checks.length)*100);
-    return {...stats, status, score, topConverged, bottomConverged, finalStable};
+    return {...stats, status, score, topConverged, bottomConverged, finalStable, identityStable};
   }
 
   static async harvest(adapter, cfg, onProgress, abortSignal){
@@ -642,7 +700,8 @@ class ScrollEngine{
       return clamped;
     };
 
-    const messageMap = new Map(); // key -> {role, content, sig, _order}
+    const messageMap = new Map(); // key -> {role, content, sig, firstSeenCapture, firstSeenDomIndex}
+    const orderEdges = new Map(); // key -> Set<nextKey>
     const stats = {
       captures:0,
       topIterations:0,
@@ -654,20 +713,164 @@ class ScrollEngine{
       finalStableHits:0,
       finalNewMessages:0,
       expandClicks:0,
-      stableTarget:3
+      stableTarget:3,
+      mergedUpdates:0,
+      unknownMessages:0,
+      weakIdentityMessages:0,
+      orderGraphCycles:0
     };
     let expandBudgetLeft = Math.max(0, Number(cfg.expandMaxClicks)||0);
+
+    const classifySig = (sig)=>{
+      const raw = typeof sig === 'string' ? sig.trim() : '';
+      if (!raw) return {sig:'', strong:false, base:''};
+      if (raw.startsWith('id:')) return {sig:raw, strong:true, base:raw};
+      return {sig:raw, strong:false, base:raw};
+    };
+    const roleRank = (role)=>{
+      if (role === 'User' || role === 'Model' || role === 'Tool') return 2;
+      if (role) return 1;
+      return 0;
+    };
+    const contentScore = (content)=>{
+      const text = String(content || '').trim();
+      return text.length;
+    };
+    const addEdge = (from, to)=>{
+      if (!from || !to || from===to) return;
+      if (!orderEdges.has(from)) orderEdges.set(from, new Set());
+      orderEdges.get(from).add(to);
+    };
+    const keyForMessage = (m, weakOrdinalMap)=>{
+      const sigInfo = classifySig(m?.sig);
+      if (sigInfo.strong) return {key:`sig:${sigInfo.base}`, weak:false, sig:sigInfo.sig};
+      const normalized = Utils.safeText(m?.content || '').replace(/\s+/g,' ').trim();
+      const weakBase = sigInfo.base || `anon:${Utils.djb2(`${m?.role || 'Unknown'}\u0000${normalized}`)}`;
+      const ordinal = (weakOrdinalMap.get(weakBase) || 0) + 1;
+      weakOrdinalMap.set(weakBase, ordinal);
+      return {key:`weak:${weakBase}#${ordinal}`, weak:true, sig:sigInfo.sig || weakBase};
+    };
+    const findPromotableWeakKey = (next)=>{
+      for (const [existingKey, record] of messageMap.entries()){
+        if (!record.weakIdentity) continue;
+        if (record.role !== next.role) continue;
+        const currentContent = String(record.content || '').trim();
+        const nextContent = String(next.content || '').trim();
+        if (!currentContent || !nextContent) continue;
+        const sameContent = currentContent === nextContent || currentContent.includes(nextContent) || nextContent.includes(currentContent);
+        if (!sameContent) continue;
+        if (Math.abs((record.lastSeenDomIndex ?? next.domIndex) - next.domIndex) > 3) continue;
+        return existingKey;
+      }
+      return null;
+    };
+    const mergeRecord = (record, next)=>{
+      const nextContent = String(next.content || '').trim();
+      const currentContent = String(record.content || '').trim();
+      if (nextContent && nextContent !== currentContent){
+        const shouldReplace = contentScore(nextContent) > contentScore(currentContent) || nextContent.includes(currentContent);
+        if (shouldReplace){
+          if (currentContent) stats.mergedUpdates++;
+          record.content = nextContent;
+        }
+      }
+      if (roleRank(next.role) > roleRank(record.role)){
+        record.role = next.role;
+      }
+      if (!record.sig && next.sig) record.sig = next.sig;
+      if (classifySig(next.sig).strong){
+        record.weakIdentity = false;
+        record.sig = next.sig;
+      }
+      record.lastSeenCapture = stats.captures;
+      record.lastSeenDomIndex = next.domIndex;
+      return record;
+    };
+    const topoOrderMessages = ()=>{
+      const keys = Array.from(messageMap.keys());
+      const indegree = new Map(keys.map(k=>[k,0]));
+      for (const [from, tos] of orderEdges.entries()){
+        if (!indegree.has(from)) continue;
+        for (const to of tos){
+          if (!indegree.has(to)) continue;
+          indegree.set(to, indegree.get(to)+1);
+        }
+      }
+      const compareKeys = (a,b)=>{
+        const ra = messageMap.get(a);
+        const rb = messageMap.get(b);
+        return (ra.firstSeenCapture-rb.firstSeenCapture)
+          || (ra.firstSeenDomIndex-rb.firstSeenDomIndex)
+          || a.localeCompare(b);
+      };
+      const queue = keys.filter(k=>indegree.get(k)===0).sort(compareKeys);
+      const ordered = [];
+      while (queue.length){
+        const key = queue.shift();
+        ordered.push(key);
+        for (const next of orderEdges.get(key) || []){
+          if (!indegree.has(next)) continue;
+          indegree.set(next, indegree.get(next)-1);
+          if (indegree.get(next)===0){
+            queue.push(next);
+            queue.sort(compareKeys);
+          }
+        }
+      }
+      if (ordered.length !== keys.length){
+        stats.orderGraphCycles++;
+        const seen = new Set(ordered);
+        ordered.push(...keys.filter(k=>!seen.has(k)).sort(compareKeys));
+      }
+      return ordered.map(k=>messageMap.get(k));
+    };
 
     const capture = ()=>{
       stats.captures++;
       const msgs = adapter.extractMessages();
+      const visibleKeys = [];
+      const weakOrdinalMap = new Map();
       for (let i=0;i<msgs.length;i++){
         const m=msgs[i];
         if (!m || !m.content || m.content.length<2) continue;
-        const sig = typeof m.sig==='string' ? m.sig : '';
-        const key = sig ? `${sig}\u0000${m.role}\u0000${m.content}` : `${m.role}\u0000${m.content}\u0000${i}`;
-        if (!messageMap.has(key)){
-          messageMap.set(key, {...m, _order: messageMap.size});
+        const {key, weak, sig} = keyForMessage(m, weakOrdinalMap);
+        const next = {
+          ...m,
+          content: String(m.content || '').trim(),
+          role: m.role || 'Unknown',
+          domIndex: i,
+          sig
+        };
+        let resolvedKey = key;
+        if (!weak){
+          const promoteFrom = findPromotableWeakKey(next);
+          if (promoteFrom && promoteFrom !== resolvedKey && !messageMap.has(resolvedKey)){
+            const promoted = messageMap.get(promoteFrom);
+            promoted.weakIdentity = false;
+            promoted.sig = next.sig;
+            messageMap.delete(promoteFrom);
+            messageMap.set(resolvedKey, promoted);
+          }
+        }
+        visibleKeys.push(resolvedKey);
+        if (!messageMap.has(resolvedKey)){
+          messageMap.set(resolvedKey, {
+            role: next.role,
+            content: next.content,
+            sig: next.sig || null,
+            weakIdentity: weak,
+            firstSeenCapture: stats.captures,
+            firstSeenDomIndex: i,
+            lastSeenCapture: stats.captures,
+            lastSeenDomIndex: i
+          });
+        } else {
+          mergeRecord(messageMap.get(resolvedKey), next);
+        }
+      }
+      for (let i=0;i<visibleKeys.length-1;i++){
+        if (visibleKeys[i] !== visibleKeys[i+1]){
+          addEdge(visibleKeys[i], visibleKeys[i+1]);
         }
       }
       return messageMap.size;
@@ -775,7 +978,10 @@ class ScrollEngine{
       if (isRoot) window.scrollTo(0, initialY);
     }catch{}
 
-    const messages = Array.from(messageMap.values()).sort((a,b)=>a._order-b._order).map(({_order, ...m})=>m);
+    const orderedRecords = topoOrderMessages();
+    stats.unknownMessages = orderedRecords.filter(m => m.role === 'Unknown').length;
+    stats.weakIdentityMessages = orderedRecords.filter(m => !!m.weakIdentity).length;
+    const messages = orderedRecords.map(({firstSeenCapture, firstSeenDomIndex, lastSeenCapture, lastSeenDomIndex, weakIdentity, ...m})=>m);
     const quality = this.buildQuality(stats);
     return {messages, quality, containerIsRoot:isRoot};
   }
@@ -965,9 +1171,10 @@ class App{
   }
 
   computeRunDigest(messages){
-    const head = messages.slice(0,3).map(m=>`${m.role}:${(m.content||'').slice(0,120)}`).join('|');
-    const tail = messages.slice(-3).map(m=>`${m.role}:${(m.content||'').slice(0,120)}`).join('|');
-    return Utils.djb2(`${messages.length}#${head}#${tail}`);
+    const payload = messages
+      .map(m=>`${m.role || 'Unknown'}\u0000${Utils.safeText(m.content || '').replace(/\s+/g,' ').trim()}`)
+      .join('\u0001');
+    return Utils.djb2(`${messages.length}\u0002${payload}`);
   }
 
   diffInfo(messages){
@@ -1202,6 +1409,12 @@ class App{
     else if (q.status==='WARN') hint = '会話が長い場合は、もう一度実行すると安定することがあります。';
     else hint = '取得漏れの可能性が高いです。もう一度実行を推奨します。';
 
+    if ((q.weakIdentityMessages||0) > 0){
+      hint = '一部メッセージの識別が弱く、重複や順序の精度が落ちる可能性があります。';
+    } else if ((q.unknownMessages||0) > 0){
+      hint = '一部メッセージの話者判定が不明です。DOM変更の影響を受けている可能性があります。';
+    }
+
     // diffによる追加ヒント
     let diffLine = '';
     const abortedLast = diff?.lastAttempt?.status==='aborted' || diff?.lastAttempt?.status==='cancel';
@@ -1243,8 +1456,9 @@ class App{
   }
 
   buildExportMetadata(title, messages, quality, diff){
+    const warning = this.warningSummary({quality, diff});
     return {
-      title: this.adapter.getTitle(),
+      title: title,
       site: this.adapter.label,
       conversation_url: location.href,
       saved_at: Utils.formatDateJST(new Date()),
@@ -1253,9 +1467,12 @@ class App{
       format: this.config.fmt,
       quality_status: quality?.status || 'WARN',
       quality_score: quality?.score ?? 0,
-      warning: this.warningSummary({quality, diff}).hasWarning,
-      warning_text: this.warningSummary({quality, diff}).text,
-      previous_count: diff?.previous?.count
+      warning: warning.hasWarning,
+      warning_text: warning.text,
+      previous_count: diff?.previous?.count,
+      merged_updates: quality?.mergedUpdates ?? 0,
+      unknown_messages: quality?.unknownMessages ?? 0,
+      weak_identity_messages: quality?.weakIdentityMessages ?? 0
     };
   }
 
@@ -1272,20 +1489,29 @@ class App{
     const qWarn = q.status!=='PASS';
     const diffWarn = !!(diff?.previous && (!diff.stable && (diff.rate||0) >= 0.12));
     const hasWarning = qWarn || diffWarn;
-    const text = !diff?.previous
-      ? (diff?.lastAttempt?.status==='aborted' || diff?.lastAttempt?.status==='cancel'
-        ? '前回は保存されず中断'
-        : (qWarn ? (q.status==='WARN' ? 'やや不安' : '要再実行') : '前回データなし'))
-      : (qWarn ? (q.status==='WARN' ? 'やや不安' : '要再実行') : 'なし');
+    const parts = [];
+    if (!diff?.previous && (diff?.lastAttempt?.status==='aborted' || diff?.lastAttempt?.status==='cancel')){
+      parts.push('前回は保存されず中断');
+    } else if (!diff?.previous){
+      parts.push('前回データなし');
+    }
+    if (qWarn){
+      parts.push(q.status==='WARN' ? 'やや不安' : '要再実行');
+    }
+    if (diffWarn){
+      parts.push('前回との差が大きい');
+    }
+    const text = hasWarning ? Array.from(new Set(parts)).join(' / ') : 'なし';
     return {hasWarning, text};
   }
 
   compactSummaryLines(messages, quality, diff, savedState='未保存'){
     const qWarn = this.warningSummary({quality, diff});
+    const warningTail = qWarn.hasWarning && qWarn.text ? `（${qWarn.text}）` : '';
     return [
       `抽出件数: ${messages.length}件`,
       `保存状態: ${savedState}`,
-      `警告有無: ${qWarn.hasWarning?'あり':'なし'}${qWarn.text ? `（${qWarn.text}）` : ''}`
+      `警告有無: ${qWarn.hasWarning?'あり':'なし'}${warningTail}`
     ];
   }
 
@@ -1386,8 +1612,12 @@ class App{
 
     if (this.config.fmt==='json'){
       const payload = {
-        title, site, url, savedAt,
-        messageCount: messages.length,
+        metadata: {
+          ...metadata,
+          site,
+          url,
+          saved_at: savedAt
+        },
         messages: messages.map(m=>({role:this.roleLabel(m.role), roleRaw:m.role, content:m.content}))
       };
       return {fileName:this.makeFileName(title), output: JSON.stringify(payload, null, 2)};
@@ -1395,14 +1625,7 @@ class App{
 
     let out = '';
     if (this.config.fmt==='obs'){
-      // Obsidian向け（callout）
-      out += `---\n`;
-      out += `title: "${title.replace(/"/g,'\\"')}"\n`;
-      out += `site: "${site.replace(/"/g,'\\"')}"\n`;
-      out += `url: "${url.replace(/"/g,'\\"')}"\n`;
-      out += `saved_at: "${savedAt}"\n`;
-      out += `message_count: ${messages.length}\n`;
-      out += `---\n\n`;
+      out += yaml;
       out += `# ${title}\n\n- サイト: ${site}\n- 保存日時: ${savedAt}\n- URL: ${url}\n\n---\n\n`;
       for (const m of messages){
         const callout = (m.role==='User') ? '[!NOTE] あなた' : (m.role==='Model' ? '[!TIP] AI' : '[!INFO] その他');
@@ -1520,6 +1743,10 @@ class App{
           `bottomReached: ${quality.bottomReached} / bottomStableHits: ${quality.bottomStableHits}`,
           `finalNewMessages: ${quality.finalNewMessages}`,
           `expandClicks: ${quality.expandClicks}`,
+          `mergedUpdates: ${quality.mergedUpdates || 0}`,
+          `unknownMessages: ${quality.unknownMessages || 0}`,
+          `weakIdentityMessages: ${quality.weakIdentityMessages || 0}`,
+          `orderGraphCycles: ${quality.orderGraphCycles || 0}`,
         ].join('\n');
         detail.appendChild(Utils.el('pre',{text:txt,style:`margin:0;padding:12px 14px;border-top:1px solid ${THEME.border};white-space:pre-wrap;word-break:break-word;font:12px/1.6 ${THEME.mono};color:${THEME.muted};`}));
         body.appendChild(detail);
