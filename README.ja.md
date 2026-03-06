@@ -9,6 +9,20 @@
 3. URL欄に貼り付けて保存
 4. ChatGPT / Google AI Studio（Chat） / Grok の会話ページを開いて、そのブックマークを実行
 
+## 1.1) 既存ブックマークを更新する
+1. `ai-chat-export.oneliner.js` の中身を **全部コピー**
+2. ブラウザの既存ブックマークを編集
+3. URL欄を丸ごと置き換えて保存
+4. 以前の URL が壊れていた場合は、名前はそのままで URL だけ差し替えればOK
+
+## 1.2) 1行版を再生成する
+```bash
+bash /home/tn/projects/tools/ai_logger/generate_oneline_bookmarklet.sh
+```
+
+- 生成元: `ai-chat-export.js`
+- 出力先: `ai-chat-export.oneliner.js`
+
 ## 2) プリセット
 - はやい: 短い会話向き。自動展開OFF
 - ふつう: 普段はこれ。自動展開ON
