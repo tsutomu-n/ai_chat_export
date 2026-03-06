@@ -29,3 +29,4 @@
 ## ファイル
 - 可読版: ai-chat-export.js
 - ブックマーク登録用（1行）: ai-chat-export.oneliner.js
+- 再生成スクリプト: generate_oneline_bookmarklet.sh
