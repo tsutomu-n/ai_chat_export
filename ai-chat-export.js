@@ -892,7 +892,7 @@ class App{
         ...(legacy && typeof legacy === 'object' ? legacy : {}),
         ...(current && typeof current === 'object' ? current : {})
       };
-      if (legacy && typeof legacy === 'object' && Object.keys(legacy).length > 0){
+      if (legacy && typeof legacy === 'object' && Object.keys(legacy).length > 0 && !current){
         this.safeSet(runMetaKey, merged);
         this.safeDelete(legacyRunMetaKey);
       }
