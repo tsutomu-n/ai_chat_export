@@ -14,20 +14,18 @@ cleanup() {
 trap cleanup EXIT
 
 perl -0pe 's/^javascript://' "${SRC}" > "${TMP_BODY}"
-npx --yes terser "${TMP_BODY}" --compress --mangle --output "${TMP_MIN}"
+npx --yes terser "${TMP_BODY}" --compress --mangle --format ascii_only=true --output "${TMP_MIN}"
 cp "${TMP_MIN}" "${MIN_OUT}"
 
 node - "${TMP_MIN}" "${OUT}" <<'NODE'
 const fs = require('fs');
 
 const [, , minPath, outPath] = process.argv;
-let body = fs.readFileSync(minPath, 'utf8').trim();
-body = encodeURI(body)
-  .replace(/\?/g, '%3F')
-  .replace(/#/g, '%23');
-if (!body.startsWith('javascript:')) body = `javascript:${body}`;
-fs.writeFileSync(outPath, `${body}\n`);
-console.log(`Generated ${outPath} (${body.length} chars)`);
+const minified = fs.readFileSync(minPath, 'utf8').trim();
+const payload = Buffer.from(minified, 'utf8').toString('base64');
+const bookmarklet = `javascript:(()=>{eval(atob("${payload}"))})()`;
+fs.writeFileSync(outPath, `${bookmarklet}\n`);
+console.log(`Generated ${outPath} (${bookmarklet.length} chars)`);
 NODE
 
 echo "Generated ${MIN_OUT}"

@@ -22,7 +22,7 @@ bash /home/tn/projects/tools/ai_logger/generate_oneline_bookmarklet.sh
 
 - 生成元: `ai-chat-export.js`
 - 確認用 minified: `ai-chat-export.min.js`
-- 出力先: `ai-chat-export.oneliner.js`
+- 出力先: `ai-chat-export.oneliner.js`（`ai-chat-export.min.js` を base64 wrapper 化した bookmarklet）
 
 ## 2) プリセット
 - はやい: 短い会話向き。自動展開OFF
