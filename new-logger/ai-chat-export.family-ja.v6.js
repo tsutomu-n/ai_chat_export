@@ -1127,6 +1127,59 @@ class App{
     return '不明';
   }
 
+  yamlValue(v){
+    if (typeof v==='number' || typeof v==='boolean') return String(v);
+    const s = (v===undefined || v===null) ? '' : String(v);
+    return `"${s.replace(/\\/g,'\\\\').replace(/\"/g,'\\\"').replace(/\r/g,'\\r').replace(/\n/g,'\\n').replace(/\t/g,'\\t')}"`;
+  }
+
+  buildExportMetadata(title, messages, quality, diff){
+    return {
+      title: this.adapter.getTitle(),
+      site: this.adapter.label,
+      conversation_url: location.href,
+      saved_at: Utils.formatDateJST(new Date()),
+      message_count: messages.length,
+      preset: this.config.preset,
+      format: this.config.fmt,
+      quality_status: quality?.status || 'WARN',
+      quality_score: quality?.score ?? 0,
+      warning: this.warningSummary({quality, diff}).hasWarning,
+      warning_text: this.warningSummary({quality, diff}).text,
+      previous_count: diff?.previous?.count
+    };
+  }
+
+  dumpYaml(obj){
+    return ['---',
+      ...Object.entries(obj).map(([k,v])=>`${k}: ${this.yamlValue(v)}`),
+      '---',
+      ''
+    ].join('\n');
+  }
+
+  warningSummary({quality, diff}){
+    const q = quality || {status:'WARN',score:0};
+    const qWarn = q.status!=='PASS';
+    const diffWarn = !!(diff?.previous && (!diff.stable && (diff.rate||0) >= 0.12));
+    const hasWarning = qWarn || diffWarn;
+    const text = !diff?.previous
+      ? (diff?.lastAttempt?.status==='aborted' || diff?.lastAttempt?.status==='cancel'
+        ? '前回は保存されず中断'
+        : (qWarn ? (q.status==='WARN' ? 'やや不安' : '要再実行') : '前回データなし'))
+      : (qWarn ? (q.status==='WARN' ? 'やや不安' : '要再実行') : 'なし');
+    return {hasWarning, text};
+  }
+
+  compactSummaryLines(messages, quality, diff, savedState='未保存'){
+    const qWarn = this.warningSummary({quality, diff});
+    return [
+      `抽出件数: ${messages.length}件`,
+      `保存状態: ${savedState}`,
+      `警告有無: ${qWarn.hasWarning?'あり':'なし'}${qWarn.text ? `（${qWarn.text}）` : ''}`
+    ];
+  }
+
   makeFileName(title){
     const base = Utils.filenameSafe(title);
     const d = new Date();
@@ -1136,7 +1189,7 @@ class App{
     return `${stamp}_${base}.${ext}`;
   }
 
-  formatOutput(messages){
+  formatOutput(messages, quality, diff){
     const title = this.adapter.getTitle();
     const savedAt = Utils.formatDateJST(new Date());
     const site = this.adapter.label;
@@ -1170,9 +1223,13 @@ class App{
       return {fileName:this.makeFileName(title), output: out.trim()+'\n'};
     }
 
-    // 標準Markdown（YAML無し）
+    const metadata = this.buildExportMetadata(title, messages, quality, diff);
+    out += this.dumpYaml(metadata);
     out += `# ${title}\n\n`;
-    out += `- サイト: ${site}\n- 保存日時: ${savedAt}\n- URL: ${url}\n- 会話数: ${messages.length}\n\n---\n\n`;
+    out += `- サイト: ${site}\n- 保存日時: ${savedAt}\n- URL: ${url}\n- 会話数: ${messages.length}\n`;
+    const summaryLines = this.compactSummaryLines(messages, quality, diff, '未保存');
+    if (summaryLines.length) out += `${summaryLines.map(line=>`- ${line}`).join('\n')}\n`;
+    out += `\n---\n\n`;
     for (let i=0;i<messages.length;i++){
       const m = messages[i];
       out += `## ${this.roleLabel(m.role)}\n\n${(m.content||'').trim()}\n\n`;
@@ -1198,7 +1255,7 @@ class App{
       const diff = this.diffInfo(messages);
       const summary = this.qualitySummary(quality, diff);
       const title = this.adapter.getTitle();
-      const {fileName, output} = this.formatOutput(messages);
+      const {fileName, output} = this.formatOutput(messages, quality, diff);
 
       const ov = this.overlay();
       const modal = Utils.el('div',{style:`width:min(720px, calc(100vw - 32px));background:${THEME.surface};border:1px solid ${THEME.border};border-radius:16px;overflow:hidden;box-shadow:0 10px 28px rgba(0,0,0,.4);color:${THEME.fg};`});
