@@ -1,4 +1,4 @@
-# Vanilla AIチャット書き出し（ブックマークレット / 日本語UI）
+# AIチャット書き出し（ブックマークレット / 日本語UI）
 
 対象: ChatGPT（chatgpt.com / chat.openai.com） / Google AI Studio（aistudio.google.com, Chat画面） / Grok（grok系、x.com/i/grok）  
 形式: 標準Markdown（デフォルト） / Obsidian向け / JSON（任意）

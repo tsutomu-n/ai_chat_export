@@ -13,6 +13,7 @@ if (window.__AI_CHAT_EXPORT_RUNNING__) {
 window.__AI_CHAT_EXPORT_RUNNING__ = true;
 
 const APP_ID = 'ai-chat-export';
+const APP_STORAGE_VER = 'v1';
 const Z = 2147483647;
 
 const THEME = {
@@ -791,9 +792,12 @@ class App{
   }
 
   storageKeys(){
+    const scope = `${APP_ID}:${APP_STORAGE_VER}`;
     return {
-      cfgKey: `${APP_ID}_cfg_${this.siteId}`,
-      runMetaKey: `${APP_ID}_run_meta`,
+      cfgKey: `${scope}_cfg_${this.siteId}`,
+      runMetaKey: `${scope}_run_meta`,
+      legacyCfgKey: `${APP_ID}_cfg_${this.siteId}`,
+      legacyRunMetaKey: `${APP_ID}_run_meta`,
     };
   }
 
@@ -829,11 +833,19 @@ class App{
   }
 
   loadConfig(){
-    const {cfgKey} = this.storageKeys();
+    const {cfgKey, legacyCfgKey} = this.storageKeys();
     const def = this.getDefaultConfig();
     try{
-      const cfg = this.safeJsonGet(cfgKey);
-      if (!cfg || typeof cfg !== 'object') return def;
+      const cfgFromNew = this.safeJsonGet(cfgKey);
+      const legacyCfg = this.safeJsonGet(legacyCfgKey);
+      const cfg = cfgFromNew || legacyCfg;
+      if (!cfg || typeof cfg !== 'object'){
+        return def;
+      }
+      if (!cfgFromNew && legacyCfg){
+        this.safeSet(cfgKey, cfg);
+        this.safeDelete(legacyCfgKey);
+      }
       const merged = {...def, ...cfg};
       // presetの値を反映（ユーザーが変えた場合は保持）
       if (!merged.scrollMax || !merged.scrollDelay){
@@ -857,6 +869,10 @@ class App{
     try{ localStorage.setItem(key, JSON.stringify(value)); }catch{}
   }
 
+  safeDelete(key){
+    try{ localStorage.removeItem(key); }catch{}
+  }
+
   applyPreset(preset){
     const p = this.config.presets?.[preset];
     if (!p) return;
@@ -868,10 +884,19 @@ class App{
 
   // ---- run meta (diff) ----
   loadRunMeta(){
-    const {runMetaKey} = this.storageKeys();
+    const {runMetaKey, legacyRunMetaKey} = this.storageKeys();
     const normalizedMeta = (() => {
-      const meta = this.safeJsonGet(runMetaKey);
-      return meta && typeof meta === 'object' ? meta : {};
+      const current = this.safeJsonGet(runMetaKey);
+      const legacy = this.safeJsonGet(legacyRunMetaKey);
+      const merged = {
+        ...(legacy && typeof legacy === 'object' ? legacy : {}),
+        ...(current && typeof current === 'object' ? current : {})
+      };
+      if (legacy && !current){
+        this.safeSet(runMetaKey, merged);
+        this.safeDelete(legacyRunMetaKey);
+      }
+      return merged;
     })();
     const key = this.adapter.getConversationKey();
     const raw = normalizedMeta[key] || null;
@@ -1673,7 +1698,7 @@ class App{
         break;
       }
     }catch(err){
-      console.error('[AI Chat Export v6]', err);
+      console.error('[AI Chat Export]', err);
       const msg = String(err?.message||err||'');
       if (msg.includes('中断しました')){
         Utils.toast('中断しました。','warn', 3200);
