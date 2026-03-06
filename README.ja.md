@@ -21,6 +21,7 @@ bash /home/tn/projects/tools/ai_logger/generate_oneline_bookmarklet.sh
 ```
 
 - 生成元: `ai-chat-export.js`
+- 確認用 minified: `ai-chat-export.min.js`
 - 出力先: `ai-chat-export.oneliner.js`
 
 ## 2) プリセット
@@ -42,5 +43,10 @@ bash /home/tn/projects/tools/ai_logger/generate_oneline_bookmarklet.sh
 
 ## ファイル
 - 可読版: ai-chat-export.js
+- minified JS: ai-chat-export.min.js
 - ブックマーク登録用（1行）: ai-chat-export.oneliner.js
 - 再生成スクリプト: generate_oneline_bookmarklet.sh
+
+## 補足
+- `ai-chat-export.oneliner.js` は `javascript:` URL 文字列です。通常の JS lint 対象には向きません。
+- lint / 構文確認は `ai-chat-export.js` または `ai-chat-export.min.js` に対して行ってください。
